@@ -4,9 +4,9 @@ Spherical Distributions", which is available on my webpage (see my GitHub
 profile).
 
 	I provide the following:
-	- The opengl_sphere_lighting/ demonstrates a realtime sphere lighting 
-technique. Requires OpenGL4.3.
-	- The mitsuba_phase_function/ provides a phase function for Mistuba.
+	- The repository opengl_sphere_lighting/ demonstrates a realtime sphere 
+lighting technique. Requires OpenGL4.3.
+	- The repository mitsuba_phase_function/ provides a phase function for Mistuba.
 
 
 
