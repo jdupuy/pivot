@@ -1,87 +1,35 @@
 #line 1
+/* ggx.glsl - public domain GLSL library
+by Jonathan Dupuy
 
-vec3 VNDFSampleGGX(
-	vec2 u2,
-	vec3 omega_i,
-	float alpha
-) {
-	float U1 = u2.x;
-	float U2 = u2.y;
-	// 1. stretch omega_i
-	omega_i = vec3(alpha, alpha, 1.0)*omega_i;
+	This file provides utility functions for GGX BRDFs, which are used
+	in the sphere light shading technique described in my paper
+	"A Spherical Cap Preserving Parameterization for Spherical Distributions".
+*/
 
-	// normalize
-	omega_i = normalize(omega_i);
+// Evaluate GGX BRDF (brdf times cosine)
+float ggx_evalp(vec3 wi, vec3 wo, float alpha, out float pdf);
 
-	float cos_theta = omega_i.z;
-	float sin_theta = sqrt(1.0 - cos_theta*cos_theta);
+// Importance sample a visible microfacet normal from direction wi
+// Note: the algorithm I use is an improvement over Eric Heit'z
+// algorithm. It relies on Shirley's concentric mapping and produces less
+// distortion.
+vec3 ggx_sample(vec2 u, vec3 wi, float alpha);
 
-	// 2. simulate P22_{omega_i}(x_slope, y_slope, 1, 1)
-	float slope_x, slope_y;
-
-	vec2 cos_sin_phi;
-
-	// special case (normal incidence)
-	if (cos_theta >= 0.9999999)
-	{
-		float r = sqrt(U1/(1.0 - U1));
-		float p = 6.28318530718*U2;
-		slope_x = r*cos(p);
-		slope_y = r*sin(p);
-		cos_sin_phi = vec2(1.0, 0.0);
-	}
-	else
-	{
-		// sample slope_x
-		float G1 = 2.0*cos_theta/(cos_theta + 1.0);
-		float A = 2.0*U1/G1 - 1.0;
-		float tmp = 1.0/(A*A - 1.0);
-		float B = sin_theta/cos_theta;
-		float D = sqrt(B*B*tmp*tmp - (A*A - B*B)*tmp);
-		float slope_x_1 = B*tmp - D;
-		float slope_x_2 = B*tmp + D;
-
-		slope_x = (A < 0.0 || slope_x_2 > 1.0/B) ? slope_x_1 : slope_x_2;
-
-		// sample slope_y
-		float S;
-		if (U2 > 0.5)
-		{
-			S = 1.0;
-			U2 = 2.0*(U2-0.5);
-		}
-		else
-		{
-			S = -1.0;
-			U2 = 2.0*(0.5-U2);
-		}
-
-		float z = (U2*(U2*(U2*0.27385 - 0.73369) + 0.46341)) / (U2*(U2*(U2*0.093073 + 0.309420) - 1.000000) + 0.597999);
-
-		slope_y = S*z*sqrt(1.0 + slope_x*slope_x);
-
-		cos_sin_phi = normalize(omega_i.xy);
-	}
-
-	// 3. rotate
-	float tmp = cos_sin_phi.x*slope_x - cos_sin_phi.y*slope_y;
-	slope_y   = cos_sin_phi.y*slope_x + cos_sin_phi.x*slope_y;
-	slope_x   = tmp;
-
-	// 4. unstretch
-	slope_x = alpha*slope_x;
-	slope_y = alpha*slope_y;
-
-	// 5. compute normal
-	return normalize(vec3(-slope_x, -slope_y, 1.0));
-}
-
+//
+//
+//// end header file ///////////////////////////////////////////////////////////
 
 // *****************************************************************************
 /**
  * GGX Functions
  *
  */
+
+#define PI 3.141592654
+
+// -----------------------------------------------------------------------------
+// Evaluation
 float ggx_evalp(vec3 wi, vec3 wo, float alpha, out float pdf)
 {
 	if (wo.z > 0.0 && wi.z > 0.0) {
@@ -100,7 +48,7 @@ float ggx_evalp(vec3 wi, vec3 wo, float alpha, out float pdf)
 		float Gi = clamp(wi.z, 0.0, 1.0) / (sigma_i * wi_xform_mag);
 		float Go = clamp(wo.z, 0.0, 1.0) / (sigma_o * wo_xform_mag);
 		float J = alpha * alpha * wh_xform_mag * wh_xform_mag * wh_xform_mag;
-		float Dvis = clamp(dot(wo_xform, wh_xform), 0.0, 1.0) / (sigma_o * 3.141592654 * J);
+		float Dvis = clamp(dot(wo_xform, wh_xform), 0.0, 1.0) / (sigma_o * PI * J);
 		float Gcond = Gi / (Gi + Go - Gi * Go);
 		float cos_theta_d = dot(wh, wo);
 
@@ -111,44 +59,113 @@ float ggx_evalp(vec3 wi, vec3 wo, float alpha, out float pdf)
 	return 0.0;
 }
 
-vec3 ggx_sample_std(vec2 u2, vec3 wo)
+// -----------------------------------------------------------------------------
+// uniform to concentric disk
+vec2 ggx__u2_to_d2(vec2 u)
 {
-	// sample the disk
-	float a = 1.0 / (1.0 + wo.z);
-	float r = sqrt(u2.x);
-	vec2 disk;
-	if (u2.y < a) {
-		float phi = u2.y / a * 3.141592654;
+	/* Concentric map code with less branching (by Dave Cline), see
+	   http://psgraphics.blogspot.ch/2011/01/improved-code-for-concentric-map.html */
+	float r1 = 2 * u.x - 1;
+	float r2 = 2 * u.y - 1;
+	float phi, r;
 
-		disk.x = r * cos(phi);
-		disk.y = r * sin(phi);
+	if (r1 == 0 && r2 == 0) {
+		r = phi = 0;
+	} else if (r1 * r1 > r2 * r2) {
+		r = r1;
+		phi = (PI / 4) * (r2 / r1);
 	} else {
-		float phi = 3.141592654 + 3.141592654 * ((u2.y - a) / (1.0 - a));
-
-		disk.x = r * cos(phi);
-		disk.y = r * sin(phi) * wo.z;
+		r = r2;
+		phi = (PI / 2) - (r1 / r2) * (PI / 4);
 	}
 
-	// extract normal
-	vec3 t1 = (wo.z < 0.9999) ? normalize(vec3(wo.y, -wo.x, 0))
-	                          : vec3(1,0,0);
-	vec3 t2 = cross(t1, wo);
-	vec3 wm = disk.x * t1 + disk.y * t2 + wo * sqrt(1.0 - dot(disk, disk));
-
-	return wm;
+	return r * vec2(cos(phi), sin(phi));
 }
 
-vec3 ggx_sample(vec2 u2, vec3 wo, float alpha)
+// -----------------------------------------------------------------------------
+// uniform to half a concentric disk
+vec2 ggx__u2_to_hd2(vec2 u)
 {
-#if 0 // TODO: debug
-	vec3 wo_xform = normalize(vec3(wo.xy * alpha, wo.z));
-	vec3 wm_std = ggx_sample_std(u2, wo);
-	vec3 wm = normalize(vec3(wm_std.xy * alpha, wm_std.z));
-
-	return wm;
-#else
-	return VNDFSampleGGX(u2, wo, alpha);
-#endif
+	vec2 v = vec2((1 + u.x) / 2, u.y);
+	return ggx__u2_to_d2(v);
 }
 
+// -----------------------------------------------------------------------------
+// uniform to microfacet normal projected onto concentric disk
+vec2 ggx__u2_to_md2(vec2 u, float zi)
+{
+	float a = 1.0f / (1.0f + zi);
+
+	if (u.x > a) {
+		float xu = (u.x - a) / (1.0f - a); // remap to [0, 1]
+
+		return vec2(zi, 1) * ggx__u2_to_hd2(vec2(xu, u.y));
+	} else {
+		float xu = (u.x - a) / a; // remap to [-1, 0]
+
+		return ggx__u2_to_hd2(vec2(xu, u.y));
+	}
+}
+
+// -----------------------------------------------------------------------------
+// concentric disk to microfacet normal
+vec3 ggx__d2_to_h2(vec2 d, float zi, float z_i)
+{
+	vec3 z = vec3(z_i, 0, zi);
+	vec3 y = vec3(0, 1, 0);
+	vec3 x = vec3(zi, 0, -z_i); // cross(z, y)
+	float tmp = clamp(1 - dot(d, d), 0.0, 1.0);
+	vec3 wm = x * d.x + y * d.y + z * sqrt(tmp);
+
+	return vec3(wm.x, wm.y, clamp(wm.z, 0.0, 1.0));
+}
+
+// -----------------------------------------------------------------------------
+vec3 ggx__u2_to_h2_std_radial(vec2 u, float zi, float z_i)
+{
+	return ggx__d2_to_h2(ggx__u2_to_md2(u, zi), zi, z_i);
+}
+
+// -----------------------------------------------------------------------------
+// standard GGX variate exploiting rotational symmetry
+vec3 ggx__u2_to_h2_std(vec2 u, vec3 wi)
+{
+	float zi = wi.z;
+	float z_i = sqrt(wi.x * wi.x + wi.y * wi.y);
+	vec3 wm = ggx__u2_to_h2_std_radial(u, zi, z_i);
+
+	// rotate for non-normal incidence
+	if (z_i > 0) {
+		float nrm = 1 / z_i;
+		float c = wi.x * nrm;
+		float s = wi.y * nrm;
+		float x = c * wm.x - s * wm.y;
+		float y = s * wm.x + c * wm.y;
+
+		wm = vec3(x, y, wm.z);
+	}
+
+	return wm;
+}
+
+// -----------------------------------------------------------------------------
+// warp the domain to match the standard GGX distribution
+// (note: works with anisotropic roughness)
+vec3 ggx__u2_to_h2(vec2 u, vec3 wi, float r1, float r2)
+{
+	vec3 wi_std = normalize(vec3(r1, r2, 1) * wi);
+	vec3 wm_std = ggx__u2_to_h2_std(u, wi_std);
+	vec3 wm = normalize(vec3(r1, r2, 1) * wm_std);
+
+	return wm;
+}
+
+// -----------------------------------------------------------------------------
+// importance sample: map the unit square to the hemisphere
+vec3 ggx_sample(vec2 u, vec3 wi, float alpha)
+{
+	return ggx__u2_to_h2(u, wi, alpha, alpha);
+}
+
+#undef PI
 
